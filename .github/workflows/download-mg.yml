@@ -2,10 +2,9 @@ name: Download MG Renderer Latest Release
 
 on:
   schedule:
-    # 每30分钟运行一次
-    - cron: '*/30 * * * *'
+    # 每2小时运行一次
+    - cron: '0 */2 * * *'
   workflow_dispatch:
-    # 允许手动触发
   push:
     branches: [ main, master ]
     paths:
@@ -13,7 +12,7 @@ on:
 
 permissions:
   contents: write
-  actions: read
+  actions: write   # 需要删除历史运行记录的权限
 
 jobs:
   download-and-deploy:
@@ -183,3 +182,48 @@ jobs:
         else
           echo "ℹ️ MobileGlues 当前已是最新版本，无需更新"
         fi
+
+    # 👇 新增：自动删除旧运行记录（保留最新7条）
+    - name: Delete old workflow runs (keep latest 7)
+      if: always()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const perPage = 100;
+          const maxDelete = 100;
+          const keep = 7;
+
+          // 直接使用当前工作流文件路径作为 workflow_id
+          const workflowFile = ".github/workflows/download-mg.yml";
+
+          const { data: { workflow_runs } } = await github.rest.actions.listWorkflowRuns({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            workflow_id: workflowFile,
+            per_page: perPage,
+          });
+
+          workflow_runs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+          if (workflow_runs.length <= keep) {
+            console.log(`ℹ️ Only ${workflow_runs.length} runs, nothing to delete.`);
+            return;
+          }
+
+          const toDelete = workflow_runs.slice(keep, keep + maxDelete);
+          console.log(`This run will delete ${toDelete.length} old runs (total fetched: ${workflow_runs.length})`);
+
+          const concurrency = 10;
+          for (let i = 0; i < toDelete.length; i += concurrency) {
+            const batch = toDelete.slice(i, i + concurrency);
+            await Promise.all(batch.map(run => {
+              console.log(`🗑️ Deleting run ${run.id} (${run.created_at})`);
+              return github.rest.actions.deleteWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+              });
+            }));
+          }
+
+          console.log(`✅ Deleted ${toDelete.length} old runs, kept latest ${keep}.`);
