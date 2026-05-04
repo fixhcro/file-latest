@@ -275,29 +275,41 @@ jobs:
       uses: actions/github-script@v7
       with:
         script: |
-          const runs = await github.paginate(
-            github.rest.actions.listWorkflowRuns,
-            {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: ".github/workflows/download-fcl.yml",  // 硬编码完整路径
-              per_page: 100,
-            }
-          );
-          
-          runs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+          const perPage = 100;        // 每次最多获取的记录数
+          const maxDelete = 100;      // 每次最多删除的记录数，防止超时和触发限流
           const keep = 7;
-          if (runs.length > keep) {
-            const toDelete = runs.slice(keep);
-            for (const run of toDelete) {
+
+          // 只获取最近 perPage 条运行记录（已足够判断）
+          const { data: { workflow_runs } } = await github.rest.actions.listWorkflowRuns({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            workflow_id: ".github/workflows/download-fcl.yml",
+            per_page: perPage,
+          });
+
+          workflow_runs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+          if (workflow_runs.length <= keep) {
+            console.log(`ℹ️ Only ${workflow_runs.length} runs, nothing to delete.`);
+            return;
+          }
+
+          // 只取超出保留数量的最老的那批记录，最多删除 maxDelete 条
+          const toDelete = workflow_runs.slice(keep, keep + maxDelete);
+          console.log(`This run will delete ${toDelete.length} old runs (total runs fetched: ${workflow_runs.length})`);
+
+          // 并行删除以提升速度（但限制并发数防止短时过载）
+          const concurrency = 10;    // 同时进行的删除请求数
+          for (let i = 0; i < toDelete.length; i += concurrency) {
+            const batch = toDelete.slice(i, i + concurrency);
+            await Promise.all(batch.map(run => {
               console.log(`🗑️ Deleting run ${run.id} (${run.created_at})`);
-              await github.rest.actions.deleteWorkflowRun({
+              return github.rest.actions.deleteWorkflowRun({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 run_id: run.id,
               });
-            }
-            console.log(`✅ Deleted ${toDelete.length} old runs, kept latest ${keep}`);
-          } else {
-            console.log(`ℹ️ Total runs: ${runs.length}, no need to delete.`);
+            }));
           }
+          
+          console.log(`✅ Done. Deleted ${toDelete.length} old runs (kept latest ${keep}).`);
