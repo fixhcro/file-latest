@@ -275,36 +275,29 @@ jobs:
       uses: actions/github-script@v7
       with:
         script: |
-          const path = require('path');
-          // 从环境变量获取工作流文件名（例如 'download-fcl.yml'）
-          const workflowFile = path.basename(process.env.GITHUB_WORKFLOW);
-          try {
-            const runs = await github.paginate(
-              github.rest.actions.listWorkflowRuns,
-              {
+          const runs = await github.paginate(
+            github.rest.actions.listWorkflowRuns,
+            {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: ".github/workflows/download-fcl.yml",  // 硬编码完整路径
+              per_page: 100,
+            }
+          );
+          
+          runs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+          const keep = 7;
+          if (runs.length > keep) {
+            const toDelete = runs.slice(keep);
+            for (const run of toDelete) {
+              console.log(`🗑️ Deleting run ${run.id} (${run.created_at})`);
+              await github.rest.actions.deleteWorkflowRun({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                workflow_id: workflowFile,
-                per_page: 100,
-              }
-            );
-            
-            runs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-            const keep = 7;
-            if (runs.length > keep) {
-              const toDelete = runs.slice(keep);
-              for (const run of toDelete) {
-                console.log(`🗑️ Deleting run ${run.id} (${run.created_at})`);
-                await github.rest.actions.deleteWorkflowRun({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  run_id: run.id,
-                });
-              }
-              console.log(`✅ Deleted ${toDelete.length} old runs, kept latest ${keep}`);
-            } else {
-              console.log(`ℹ️ Total runs: ${runs.length}, no need to delete.`);
+                run_id: run.id,
+              });
             }
-          } catch (error) {
-            console.error(`⚠️ Failed to clean old runs: ${error.message}`);
+            console.log(`✅ Deleted ${toDelete.length} old runs, kept latest ${keep}`);
+          } else {
+            console.log(`ℹ️ Total runs: ${runs.length}, no need to delete.`);
           }
