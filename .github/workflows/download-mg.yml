@@ -41,11 +41,16 @@ jobs:
           echo "❌ 无法获取最新版本标签"
           exit 1
         fi
+        # 直接提取 APK 下载地址
+        apk_url=$(echo "$release_data" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -n1)
+        if [ -z "$apk_url" ]; then
+          echo "❌ 未找到 APK 文件"
+          exit 1
+        fi
         echo "latest_tag=$latest_tag" >> $GITHUB_OUTPUT
-        echo "release_data<<EOF" >> $GITHUB_OUTPUT
-        echo "$release_data" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
+        echo "apk_url=$apk_url" >> $GITHUB_OUTPUT
         echo "检测到最新版本标签: $latest_tag"
+        echo "APK 下载地址: $apk_url"
 
     - name: Check if version needs update
       id: version_check
@@ -76,7 +81,7 @@ jobs:
           fi
 
           # 切回默认分支（main/master）
-          git checkout ${{ github.ref_name }}
+          git checkout "${{ github.ref_name }}"
         else
           echo "latest 分支不存在，视为首次运行，需要更新"
         fi
@@ -87,18 +92,9 @@ jobs:
       if: steps.version_check.outputs.needs_update == 'true'
       run: |
         echo "开始下载 MobileGlues APK..."
-
-        # 提取 APK URL（取第一个 .apk）
-        apk_url=$(echo '${{ steps.release.outputs.release_data }}' | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -n1)
-        if [ -z "$apk_url" ]; then
-          echo "❌ 未找到 APK 文件"
-          exit 1
-        fi
-
-        echo "APK 下载地址: $apk_url"
+        apk_url="${{ steps.release.outputs.apk_url }}"
         target="mg/MG-release.apk"
         mkdir -p "$(dirname "$target")"
-
         if wget --progress=bar:force -c "$apk_url" -O "$target" 2>&1; then
           if [ -s "$target" ]; then
             echo "✅ APK 下载成功，大小: $(du -h "$target" | cut -f1)"
