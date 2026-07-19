@@ -2,10 +2,8 @@ name: Download FCL Latest Release
 
 on:
   schedule:
-    # 每2小时运行一次
     - cron: '0 */2 * * *'
   workflow_dispatch:
-    # 允许手动触发
   push:
     branches: [ main, master ]
     paths:
@@ -13,7 +11,7 @@ on:
 
 permissions:
   contents: write
-  actions: write    # 需要写入权限以删除旧运行记录
+  actions: write
 
 jobs:
   download-and-deploy:
@@ -50,14 +48,12 @@ jobs:
       run: |
         latest_version="${{ steps.release.outputs.latest_version }}"
         
-        # 检查版本号是否有效
         if [ "$latest_version" = "null" ] || [ -z "$latest_version" ]; then
           echo "警告: 无法获取有效的版本信息 (版本: $latest_version)，跳过下载"
           echo "needs_update=false" >> $GITHUB_OUTPUT
           exit 0
         fi
         
-        # 检查latest分支是否存在并切换到该分支读取版本文件
         if git show-ref --verify --quiet refs/remotes/origin/latest; then
           echo "切换到latest分支检查版本..."
           git checkout latest
@@ -81,7 +77,6 @@ jobs:
             echo "needs_update=true" >> $GITHUB_OUTPUT
           fi
           
-          # 切换回主分支继续后续操作
           git checkout ${{ github.ref_name }}
         else
           echo "latest分支不存在，开始下载最新版本 ($latest_version)"
@@ -99,55 +94,42 @@ jobs:
       run: |
         echo "开始下载APK文件到目录: fcl/"
         
-        # 文件名修复函数
         fix_filename() {
           local original_name="$1"
           
-          # 处理所有架构类型
           if [[ "$original_name" =~ FCL-release-[0-9.]+-(.+)\.apk$ ]]; then
             local arch_part="${BASH_REMATCH[1]}"
             echo "FCL-release-${arch_part}.apk"
-          # 处理all架构的特殊情况
           elif [[ "$original_name" =~ FCL-release-[0-9.]+\.apk$ ]]; then
             echo "FCL-release-all.apk"
-          # 处理无架构标识的文件名
           elif [[ "$original_name" =~ FCL-release-[0-9.]+(\.apk)$ ]]; then
             echo "FCL-release-all.apk"
           else
-            # 如果都不匹配，返回原始名称
             echo "$original_name"
           fi
         }
         
-        # 获取所有APK下载链接并保存到临时文件
         echo '${{ steps.release.outputs.release_data }}' | jq -r '.assets[] | select(.name | test("^FCL-release.*\\.apk$")) | .browser_download_url' > /tmp/apk_urls.txt
         
         echo "找到的下载链接:"
         cat /tmp/apk_urls.txt
         
-        # 处理每个APK资源
         while IFS= read -r url; do
           if [ -z "$url" ]; then
             continue
           fi
           
-          # 提取原始文件名
           original_name=$(basename "$url")
-          
-          # 使用修复后的文件名处理函数
           new_name=$(fix_filename "$original_name")
           target_path="fcl/$new_name"
           
           echo "下载: $original_name → 保存为: $target_path"
           echo "URL: $url"
           
-          # 确保目录存在
           mkdir -p "$(dirname "$target_path")"
           
-          # 下载文件，显示详细输出
           echo "开始下载..."
           if wget --progress=bar:force -c "$url" -O "$target_path" 2>&1; then
-            # 检查文件是否存在且不为空
             if [ -f "$target_path" ] && [ -s "$target_path" ]; then
               file_size=$(du -h "$target_path" | cut -f1)
               echo "✅ 下载完成! 文件大小: $file_size"
@@ -164,11 +146,9 @@ jobs:
           fi
         done < /tmp/apk_urls.txt
         
-        # 显示最终下载结果
         echo "所有下载完成，文件列表:"
         ls -la fcl/
         
-        # 清理临时文件
         rm -f /tmp/apk_urls.txt
 
     - name: Update version file
@@ -206,32 +186,80 @@ jobs:
         echo "- FCL-release-x86_64.apk - x86_64架构" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
 
-    # ---------- 关键修复：升级 action 并移除 make_latest ----------
-    - name: Create/Update GitHub Release
+    - name: Publish GitHub Release via API
       if: steps.version_check.outputs.needs_update == 'true'
-      uses: softprops/action-gh-release@v2
+      uses: actions/github-script@v7
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}   # 显式提供 token
-        tag_name: FCL
-        name: ${{ steps.release.outputs.latest_version }}
-        body: ${{ steps.release_body.outputs.body }}
-        files: |
-          fcl/*.apk
-        draft: false
-        prerelease: false
-        # make_latest 已在 v2 中移除，无需此参数
-    # -----------------------------------------------------------
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+
+          const tag = 'FCL';
+          const version = `${{ steps.release.outputs.latest_version }}`;
+          const body = `${{ steps.release_body.outputs.body }}`;
+
+          // 1. 删除已有 Release
+          try {
+            const existing = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner, repo: context.repo.repo, tag
+            });
+            await github.rest.repos.deleteRelease({
+              owner: context.repo.owner, repo: context.repo.repo,
+              release_id: existing.data.id
+            });
+            console.log(`已删除旧 Release (id=${existing.data.id})`);
+          } catch (e) {
+            if (e.status !== 404) throw e;
+            console.log('没有已存在的 Release');
+          }
+
+          // 2. 删除已有 Tag
+          try {
+            await github.rest.git.deleteRef({
+              owner: context.repo.owner, repo: context.repo.repo,
+              ref: `tags/${tag}`
+            });
+            console.log('已删除旧 Tag');
+          } catch (e) {
+            if (e.status !== 404) throw e;
+            console.log('没有已存在的 Tag');
+          }
+
+          // 3. 创建新 Release
+          const release = await github.rest.repos.createRelease({
+            owner: context.repo.owner, repo: context.repo.repo,
+            tag_name: tag, name: version, body, draft: false, prerelease: false
+          });
+          console.log(`已创建 Release: ${release.data.tag_name} (id=${release.data.id})`);
+
+          // 4. 上传 APK 文件
+          const apkDir = 'fcl';
+          const files = fs.readdirSync(apkDir).filter(f => f.endsWith('.apk'));
+          console.log(`找到 ${files.length} 个 APK 文件: ${files.join(', ')}`);
+
+          for (const file of files) {
+            const filePath = path.join(apkDir, file);
+            const fileData = fs.readFileSync(filePath);
+            console.log(`上传 ${file} (${(fileData.length / 1024 / 1024).toFixed(1)} MB)...`);
+
+            await github.rest.repos.uploadReleaseAsset({
+              owner: context.repo.owner, repo: context.repo.repo,
+              release_id: release.data.id,
+              name: file,
+              data: fileData
+            });
+            console.log(`✅ 上传完成: ${file}`);
+          }
+
+          console.log(`🎉 Release ${version} 发布成功，共 ${files.length} 个文件`);
 
     - name: Switch to latest branch and update version
       if: steps.version_check.outputs.needs_update == 'true'
       run: |
-        # 暂存当前版本信息
         current_version="${{ steps.release.outputs.latest_version }}"
         
-        # 清理工作目录中可能冲突的文件
         rm -f fcl/releases.txt
         
-        # 检查latest分支是否存在
         if git show-ref --verify --quiet refs/remotes/origin/latest; then
           echo "切换到existing latest分支"
           git checkout latest
@@ -241,13 +269,11 @@ jobs:
           git checkout -b latest
         fi
         
-        # 只保存版本记录文件到latest分支
         mkdir -p fcl
         echo "$current_version" > fcl/releases.txt
         
         git add fcl/releases.txt
         
-        # 检查是否有变更需要提交
         if ! git diff --staged --quiet; then
           git commit -m "Update version to $current_version"
           git push origin latest
@@ -261,7 +287,6 @@ jobs:
           echo "🚀 APK文件已上传到GitHub Release"
           echo "📋 版本记录已更新到latest分支"
           
-          # 显示下载的文件列表
           echo "📦 发布的文件:"
           ls -la fcl/*.apk 2>/dev/null || echo "未找到APK文件"
           
