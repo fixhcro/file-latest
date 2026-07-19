@@ -206,10 +206,12 @@ jobs:
         echo "- FCL-release-x86_64.apk - x86_64架构" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
 
+    # ---------- 关键修复：升级 action 并移除 make_latest ----------
     - name: Create/Update GitHub Release
       if: steps.version_check.outputs.needs_update == 'true'
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
+        token: ${{ secrets.GITHUB_TOKEN }}   # 显式提供 token
         tag_name: FCL
         name: ${{ steps.release.outputs.latest_version }}
         body: ${{ steps.release_body.outputs.body }}
@@ -217,9 +219,8 @@ jobs:
           fcl/*.apk
         draft: false
         prerelease: false
-        make_latest: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # make_latest 已在 v2 中移除，无需此参数
+    # -----------------------------------------------------------
 
     - name: Switch to latest branch and update version
       if: steps.version_check.outputs.needs_update == 'true'
@@ -267,7 +268,6 @@ jobs:
           echo "🔗 Release链接: https://github.com/${{ github.repository }}/releases/tag/FCL"
         else
           echo "ℹ️ 当前已是最新版本，无需更新"
-
         fi
 
     - name: Delete old workflow runs (keep latest 7)
@@ -275,11 +275,10 @@ jobs:
       uses: actions/github-script@v7
       with:
         script: |
-          const perPage = 100;        // 每次最多获取的记录数
-          const maxDelete = 100;      // 每次最多删除的记录数，防止超时和触发限流
+          const perPage = 100;
+          const maxDelete = 100;
           const keep = 7;
 
-          // 只获取最近 perPage 条运行记录（已足够判断）
           const { data: { workflow_runs } } = await github.rest.actions.listWorkflowRuns({
             owner: context.repo.owner,
             repo: context.repo.repo,
@@ -294,12 +293,10 @@ jobs:
             return;
           }
 
-          // 只取超出保留数量的最老的那批记录，最多删除 maxDelete 条
           const toDelete = workflow_runs.slice(keep, keep + maxDelete);
           console.log(`This run will delete ${toDelete.length} old runs (total runs fetched: ${workflow_runs.length})`);
 
-          // 并行删除以提升速度（但限制并发数防止短时过载）
-          const concurrency = 10;    // 同时进行的删除请求数
+          const concurrency = 10;
           for (let i = 0; i < toDelete.length; i += concurrency) {
             const batch = toDelete.slice(i, i + concurrency);
             await Promise.all(batch.map(run => {
