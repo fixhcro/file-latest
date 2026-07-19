@@ -186,22 +186,15 @@ jobs:
         echo "- FCL-release-x86_64.apk - x86_64架构" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
 
-    - name: Publish GitHub Release via API
+    - name: Delete existing release and tag
       if: steps.version_check.outputs.needs_update == 'true'
       uses: actions/github-script@v7
       with:
         script: |
-          const fs = require('fs');
-          const path = require('path');
-
-          const tag = 'FCL';
-          const version = `${{ steps.release.outputs.latest_version }}`;
-          const body = `${{ steps.release_body.outputs.body }}`;
-
-          // 1. 删除已有 Release
+          // 删除旧 Release
           try {
             const existing = await github.rest.repos.getReleaseByTag({
-              owner: context.repo.owner, repo: context.repo.repo, tag
+              owner: context.repo.owner, repo: context.repo.repo, tag: 'FCL'
             });
             await github.rest.repos.deleteRelease({
               owner: context.repo.owner, repo: context.repo.repo,
@@ -213,11 +206,11 @@ jobs:
             console.log('没有已存在的 Release');
           }
 
-          // 2. 删除已有 Tag
+          // 删除旧 Tag
           try {
             await github.rest.git.deleteRef({
               owner: context.repo.owner, repo: context.repo.repo,
-              ref: `tags/${tag}`
+              ref: 'tags/FCL'
             });
             console.log('已删除旧 Tag');
           } catch (e) {
@@ -225,33 +218,62 @@ jobs:
             console.log('没有已存在的 Tag');
           }
 
-          // 3. 创建新 Release
+    - name: Create GitHub Release
+      if: steps.version_check.outputs.needs_update == 'true'
+      id: create_release
+      uses: actions/github-script@v7
+      with:
+        script: |
           const release = await github.rest.repos.createRelease({
-            owner: context.repo.owner, repo: context.repo.repo,
-            tag_name: tag, name: version, body, draft: false, prerelease: false
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            tag_name: 'FCL',
+            name: `FoldCraftLauncher v${{ steps.release.outputs.latest_version }}`,
+            body: `${{ steps.release_body.outputs.body }}`,
+            draft: false,
+            prerelease: false
           });
           console.log(`已创建 Release: ${release.data.tag_name} (id=${release.data.id})`);
+          core.setOutput('release_id', release.data.id);
 
-          // 4. 上传 APK 文件
-          const apkDir = 'fcl';
-          const files = fs.readdirSync(apkDir).filter(f => f.endsWith('.apk'));
-          console.log(`找到 ${files.length} 个 APK 文件: ${files.join(', ')}`);
-
-          for (const file of files) {
-            const filePath = path.join(apkDir, file);
-            const fileData = fs.readFileSync(filePath);
-            console.log(`上传 ${file} (${(fileData.length / 1024 / 1024).toFixed(1)} MB)...`);
-
-            await github.rest.repos.uploadReleaseAsset({
-              owner: context.repo.owner, repo: context.repo.repo,
-              release_id: release.data.id,
-              name: file,
-              data: fileData
-            });
-            console.log(`✅ 上传完成: ${file}`);
-          }
-
-          console.log(`🎉 Release ${version} 发布成功，共 ${files.length} 个文件`);
+    - name: Upload APK files
+      if: steps.version_check.outputs.needs_update == 'true'
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RELEASE_ID: ${{ steps.create_release.outputs.release_id }}
+      run: |
+        echo "开始上传 APK 文件..."
+        
+        for apk in fcl/*.apk; do
+          if [ ! -f "$apk" ]; then
+            continue
+          fi
+          
+          filename=$(basename "$apk")
+          filesize=$(du -h "$apk" | cut -f1)
+          echo "上传: $filename ($filesize)"
+          
+          # 使用 curl 流式上传，不受内存限制
+          response=$(curl -s -w "\n%{http_code}" \
+            -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary "@$apk" \
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets?name=${filename}")
+          
+          http_code=$(echo "$response" | tail -1)
+          body=$(echo "$response" | sed '$d')
+          
+          if [ "$http_code" = "201" ]; then
+            echo "✅ 上传成功: $filename"
+          else
+            echo "❌ 上传失败: $filename (HTTP $http_code)"
+            echo "$body"
+            exit 1
+          fi
+        done
+        
+        echo "所有文件上传完成"
 
     - name: Switch to latest branch and update version
       if: steps.version_check.outputs.needs_update == 'true'
