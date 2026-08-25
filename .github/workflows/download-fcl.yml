@@ -97,12 +97,13 @@ jobs:
         fix_filename() {
           local original_name="$1"
           
-          if [[ "$original_name" =~ FCL-release-[0-9.]+-(.+)\.apk$ ]]; then
+          # 修复：正则表达式加引号，避免括号被 shell 解析
+          if [[ "$original_name" =~ "FCL-release-[0-9.]+-(.+)\.apk$" ]]; then
             local arch_part="${BASH_REMATCH[1]}"
             echo "FCL-release-${arch_part}.apk"
-          elif [[ "$original_name" =~ FCL-release-[0-9.]+\.apk$ ]]; then
+          elif [[ "$original_name" =~ "FCL-release-[0-9.]+\.apk$" ]]; then
             echo "FCL-release-all.apk"
-          elif [[ "$original_name" =~ FCL-release-[0-9.]+(\.apk)$ ]]; then
+          elif [[ "$original_name" =~ "FCL-release-[0-9.]+(\.apk)$" ]]; then
             echo "FCL-release-all.apk"
           else
             echo "$original_name"
