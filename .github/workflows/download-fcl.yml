@@ -38,9 +38,7 @@ jobs:
         release_data=$(curl --silent "https://api.github.com/repos/FCL-Team/FoldCraftLauncher/releases/latest")
         latest_version=$(echo "$release_data" | jq -r '.tag_name')
         echo "latest_version=$latest_version" >> $GITHUB_OUTPUT
-        echo "release_data<<EOF" >> $GITHUB_OUTPUT
-        echo "$release_data" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
+        echo "$release_data" > release_data.json   # 保存到文件，避免后续引号冲突
         echo "检测到最新版本: $latest_version"
 
     - name: Check if version needs update
@@ -97,7 +95,7 @@ jobs:
         fix_filename() {
           local original_name="$1"
           
-          # 修复：正则表达式加引号，避免括号被 shell 解析
+          # 正则表达式加引号，避免括号被 shell 解析
           if [[ "$original_name" =~ "FCL-release-[0-9.]+-(.+)\.apk$" ]]; then
             local arch_part="${BASH_REMATCH[1]}"
             echo "FCL-release-${arch_part}.apk"
@@ -110,7 +108,8 @@ jobs:
           fi
         }
         
-        echo '${{ steps.release.outputs.release_data }}' | jq -r '.assets[] | select(.name | test("^FCL-release.*\\.apk$")) | .browser_download_url' > /tmp/apk_urls.txt
+        # 直接从文件读取，避免单引号冲突
+        jq -r '.assets[] | select(.name | test("^FCL-release.*\\.apk$")) | .browser_download_url' release_data.json > /tmp/apk_urls.txt
         
         echo "找到的下载链接:"
         cat /tmp/apk_urls.txt
