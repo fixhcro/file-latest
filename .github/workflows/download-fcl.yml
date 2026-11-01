@@ -16,7 +16,7 @@ permissions:
 jobs:
   download-and-deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -30,7 +30,7 @@ jobs:
         echo "🕐 工作流开始时间: $(date '+%Y-%m-%d %H:%M:%S %Z')"
         echo "🔄 触发方式: ${{ github.event_name }}"
         mkdir -p fcl
-        
+
     - name: Get latest FCL release info
       id: release
       run: |
@@ -45,24 +45,24 @@ jobs:
       id: version_check
       run: |
         latest_version="${{ steps.release.outputs.latest_version }}"
-        
+
         if [ "$latest_version" = "null" ] || [ -z "$latest_version" ]; then
           echo "警告: 无法获取有效的版本信息 (版本: $latest_version)，跳过下载"
           echo "needs_update=false" >> $GITHUB_OUTPUT
           exit 0
         fi
-        
+
         if git show-ref --verify --quiet refs/remotes/origin/latest; then
           echo "切换到latest分支检查版本..."
           git checkout latest
           git pull origin latest
-          
+
           VERSION_FILE="fcl/releases.txt"
           if [ -f "$VERSION_FILE" ]; then
             current_version=$(cat "$VERSION_FILE")
             echo "读取到当前版本: $current_version"
             echo "最新版本: $latest_version"
-            
+
             if [ "$current_version" == "$latest_version" ]; then
               echo "当前已是最新版本 ($latest_version)，跳过下载"
               echo "needs_update=false" >> $GITHUB_OUTPUT
@@ -74,7 +74,7 @@ jobs:
             echo "latest分支存在但未找到版本记录文件"
             echo "needs_update=true" >> $GITHUB_OUTPUT
           fi
-          
+
           git checkout ${{ github.ref_name }}
         else
           echo "latest分支不存在，开始下载最新版本 ($latest_version)"
@@ -91,43 +91,43 @@ jobs:
       if: steps.version_check.outputs.needs_update == 'true'
       run: |
         echo "开始下载APK文件到目录: fcl/"
-        
+
         fix_filename() {
           local original_name="$1"
-          
-          # 正则表达式加引号，避免括号被 shell 解析
-          if [[ "$original_name" =~ "FCL-release-[0-9.]+-(.+)\.apk$" ]]; then
-            local arch_part="${BASH_REMATCH[1]}"
-            echo "FCL-release-${arch_part}.apk"
-          elif [[ "$original_name" =~ "FCL-release-[0-9.]+\.apk$" ]]; then
-            echo "FCL-release-all.apk"
-          elif [[ "$original_name" =~ "FCL-release-[0-9.]+(\.apk)$" ]]; then
+          local base_name="${original_name%.apk}"
+
+          # 注意：[[ =~ ]] 右侧禁止加引号，否则正则退化为字面量字符串匹配
+          if [[ "$base_name" =~ ^FCL-release-[0-9]+(\.[0-9]+)*-(.+)$ ]]; then
+            # FCL-release-1.3.4.2-all.apk → FCL-release-all.apk
+            echo "FCL-release-${BASH_REMATCH[2]}.apk"
+          elif [[ "$base_name" =~ ^FCL-release-[0-9]+(\.[0-9]+)*$ ]]; then
+            # FCL-release-1.3.4.2.apk（无架构后缀）→ FCL-release-all.apk
             echo "FCL-release-all.apk"
           else
             echo "$original_name"
           fi
         }
-        
+
         # 直接从文件读取，避免单引号冲突
         jq -r '.assets[] | select(.name | test("^FCL-release.*\\.apk$")) | .browser_download_url' release_data.json > /tmp/apk_urls.txt
-        
+
         echo "找到的下载链接:"
         cat /tmp/apk_urls.txt
-        
+
         while IFS= read -r url; do
           if [ -z "$url" ]; then
             continue
           fi
-          
+
           original_name=$(basename "$url")
           new_name=$(fix_filename "$original_name")
           target_path="fcl/$new_name"
-          
+
           echo "下载: $original_name → 保存为: $target_path"
           echo "URL: $url"
-          
+
           mkdir -p "$(dirname "$target_path")"
-          
+
           echo "开始下载..."
           if wget --progress=bar:force -c "$url" -O "$target_path" 2>&1; then
             if [ -f "$target_path" ] && [ -s "$target_path" ]; then
@@ -145,10 +145,21 @@ jobs:
             exit 1
           fi
         done < /tmp/apk_urls.txt
-        
-        echo "所有下载完成，文件列表:"
+
+        # 断言：上传前必须恰好是 Worker 期望的那几个名字，防止再次静默错名导致 404
+        EXPECTED="FCL-release-all.apk FCL-release-arm64-v8a.apk FCL-release-armeabi-v7a.apk FCL-release-x86.apk FCL-release-x86_64.apk"
+        for f in $EXPECTED; do
+          if [ ! -s "fcl/$f" ]; then
+            echo "❌ 缺少预期文件: fcl/$f"
+            echo "当前 fcl/ 内容:"
+            ls -la fcl/
+            exit 1
+          fi
+        done
+
+        echo "✅ 文件名断言通过，所有下载完成，文件列表:"
         ls -la fcl/
-        
+
         rm -f /tmp/apk_urls.txt
 
     - name: Update version file
@@ -243,16 +254,16 @@ jobs:
         RELEASE_ID: ${{ steps.create_release.outputs.release_id }}
       run: |
         echo "开始上传 APK 文件..."
-        
+
         for apk in fcl/*.apk; do
           if [ ! -f "$apk" ]; then
             continue
           fi
-          
+
           filename=$(basename "$apk")
           filesize=$(du -h "$apk" | cut -f1)
           echo "上传: $filename ($filesize)"
-          
+
           # 使用 curl 流式上传，不受内存限制
           response=$(curl -s -w "\n%{http_code}" \
             -X POST \
@@ -260,10 +271,10 @@ jobs:
             -H "Content-Type: application/octet-stream" \
             --data-binary "@$apk" \
             "https://uploads.github.com/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets?name=${filename}")
-          
+
           http_code=$(echo "$response" | tail -1)
           body=$(echo "$response" | sed '$d')
-          
+
           if [ "$http_code" = "201" ]; then
             echo "✅ 上传成功: $filename"
           else
@@ -272,16 +283,16 @@ jobs:
             exit 1
           fi
         done
-        
+
         echo "所有文件上传完成"
 
     - name: Switch to latest branch and update version
       if: steps.version_check.outputs.needs_update == 'true'
       run: |
         current_version="${{ steps.release.outputs.latest_version }}"
-        
+
         rm -f fcl/releases.txt
-        
+
         if git show-ref --verify --quiet refs/remotes/origin/latest; then
           echo "切换到existing latest分支"
           git checkout latest
@@ -290,12 +301,12 @@ jobs:
           echo "创建新的latest分支"
           git checkout -b latest
         fi
-        
+
         mkdir -p fcl
         echo "$current_version" > fcl/releases.txt
-        
+
         git add fcl/releases.txt
-        
+
         if ! git diff --staged --quiet; then
           git commit -m "Update version to $current_version"
           git push origin latest
@@ -308,10 +319,10 @@ jobs:
           echo "✅ 成功发布FCL版本 ${{ steps.release.outputs.latest_version }}"
           echo "🚀 APK文件已上传到GitHub Release"
           echo "📋 版本记录已更新到latest分支"
-          
+
           echo "📦 发布的文件:"
           ls -la fcl/*.apk 2>/dev/null || echo "未找到APK文件"
-          
+
           echo "🔗 Release链接: https://github.com/${{ github.repository }}/releases/tag/FCL"
         else
           echo "ℹ️ 当前已是最新版本，无需更新"
@@ -355,5 +366,5 @@ jobs:
               });
             }));
           }
-          
+
           console.log(`✅ Done. Deleted ${toDelete.length} old runs (kept latest ${keep}).`);
